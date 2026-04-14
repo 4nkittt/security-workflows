@@ -131,9 +131,14 @@ jobs:
               2>/dev/null > /tmp/trufflehog-results.json || true
           fi
 
-          COUNT=$(grep -c '"DetectorName"' /tmp/trufflehog-results.json 2>/dev/null || echo 0)
+          COUNT=0
+          if [ -f /tmp/trufflehog-results.json ]; then
+            COUNT=$(grep -c '"DetectorName"' /tmp/trufflehog-results.json 2>/dev/null || true)
+            COUNT="${COUNT:-0}"
+            COUNT="${COUNT//[[:space:]]/}"
+          fi
           echo "TruffleHog verified secrets found: $COUNT"
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
 
       - name: Post TruffleHog inline PR comments
         if: github.event_name == 'pull_request'
