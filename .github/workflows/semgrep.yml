@@ -56,11 +56,11 @@ jobs:
             RULES="$RULES p/kubernetes"
           fi
 
+          # Deduplicate rule names before building flags
+          RULES=$(echo "$RULES" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
           FLAGS=""
           for r in $RULES; do FLAGS="$FLAGS --config $r"; done
-
-          # Deduplicate flags
-          FLAGS=$(echo "$FLAGS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
 
           echo "Detected rules: $FLAGS"
           echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
