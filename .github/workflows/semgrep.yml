@@ -107,7 +107,7 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh \
             | sh -s -- -b /usr/local/bin
 
-      - name: Run TruffleHog (verified secrets only)
+      - name: Run TruffleHog
         id: trufflehog
         shell: bash
         run: |
@@ -119,7 +119,6 @@ jobs:
             trufflehog git file://. \
               --since-commit "$BASE" \
               --branch "${{ github.head_ref }}" \
-              --only-verified \
               --json \
               --no-update \
               2>/dev/null > /tmp/trufflehog-results.json || true
@@ -127,7 +126,6 @@ jobs:
             # On push to main — scan last commit only
             trufflehog git file://. \
               --since-commit HEAD~1 \
-              --only-verified \
               --json \
               --no-update \
               2>/dev/null > /tmp/trufflehog-results.json || true
