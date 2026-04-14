@@ -19,56 +19,59 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh \
             | sh -s -- -b /usr/local/bin
 
-      - name: Detect language and build rule flags
+      - name: Build rule flags
         id: rules
         shell: bash
         run: |
-          # --- Semgrep official packs (always applied) ---
-          RULES="p/security-audit p/secrets p/owasp-top-ten"
+          # --- Always-on: cross-language foundational packs ---
+          RULES=""
+          RULES="$RULES p/security-audit"       # general security patterns
+          RULES="$RULES p/secrets"              # hardcoded credentials
+          RULES="$RULES p/owasp-top-ten"        # OWASP Top 10
+          RULES="$RULES p/trailofbits"          # Trail of Bits: crypto, concurrency, CORS
 
-          # --- Renowned third-party rule collections ---
-          # Trail of Bits — crypto, concurrency, CORS/CSRF, container security
-          RULES="$RULES p/trailofbits"
+          # --- Always-on: all language packs ---
+          # Semgrep skips rules that don't apply to a file's language,
+          # so running all packs has no false-positive cost.
+          RULES="$RULES p/python"               # Flask/Django taint, pickle, yaml.load
+          RULES="$RULES p/golang"               # Go security patterns
+          RULES="$RULES p/gosec"                # gosec ruleset for Go
+          RULES="$RULES p/java"                 # Java/Spring taint, XXE, SSRF
+          RULES="$RULES p/javascript"           # JS/Node XSS, injection, path traversal
+          RULES="$RULES p/typescript"           # TypeScript-specific patterns
+          RULES="$RULES p/rust"                 # Rust unsafe, crypto
+          RULES="$RULES p/php"                  # PHP injection, eval, unserialize, LFI
+          RULES="$RULES p/ruby"                 # Ruby/Rails injection, mass assignment
+          RULES="$RULES p/scala"                # Scala injection patterns
+          RULES="$RULES p/kotlin"               # Kotlin security patterns
 
-          # --- Language-specific packs (auto-detected) ---
-          if [ -f go.mod ]; then
-            RULES="$RULES p/golang p/gosec"
-          fi
-          if [ -f pom.xml ] || [ -f build.gradle ]; then
-            RULES="$RULES p/java"
-          fi
-          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-            RULES="$RULES p/python"
-          fi
-          if [ -f package.json ]; then
-            RULES="$RULES p/javascript p/typescript"
-          fi
-          if [ -f Cargo.toml ]; then
-            RULES="$RULES p/rust"
-          fi
-          if [ -f "*.tf" ] || [ -d "terraform" ]; then
+          # --- Infrastructure packs (detected) ---
+          if find . -name "*.tf" -maxdepth 4 | grep -q .; then
             RULES="$RULES p/terraform"
           fi
-          if ls *.tf 1>/dev/null 2>&1 || find . -name "*.tf" -maxdepth 3 | grep -q .; then
-            RULES="$RULES p/terraform"
-          fi
-          if find . -name "*.yaml" -o -name "*.yml" | xargs grep -l "kind:" 2>/dev/null | grep -q .; then
+          if find . \( -name "*.yaml" -o -name "*.yml" \) -maxdepth 4 \
+               | xargs grep -l "^kind:" 2>/dev/null | grep -q .; then
             RULES="$RULES p/kubernetes"
           fi
+          if find . -name "Dockerfile" -maxdepth 4 | grep -q .; then
+            RULES="$RULES p/dockerfile"
+          fi
 
-          # Deduplicate rule names before building flags
-          RULES=$(echo "$RULES" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-
+          # Deduplicate rule names, then build --config flags
+          RULES=$(echo "$RULES" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
           FLAGS=""
           for r in $RULES; do FLAGS="$FLAGS --config $r"; done
 
-          echo "Detected rules: $FLAGS"
+          echo "Rules: $RULES"
           echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
 
       - name: Run Semgrep
         shell: bash
         run: |
-          semgrep ${{ steps.rules.outputs.flags }} --json --quiet 2>/dev/null > /tmp/semgrep-results.json || true
+          semgrep ${{ steps.rules.outputs.flags }} \
+            --json \
+            --quiet \
+            2>/dev/null > /tmp/semgrep-results.json || true
           COUNT=$(jq '.results | length' /tmp/semgrep-results.json)
           echo "Found $COUNT issues"
 
