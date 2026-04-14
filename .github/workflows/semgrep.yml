@@ -4,7 +4,9 @@ on:
   workflow_call:
 
 jobs:
+  # ── Job 1: Semgrep SAST ─────────────────────────────────────────────────────
   semgrep:
+    name: Semgrep SAST
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,45 +25,25 @@ jobs:
         id: rules
         shell: bash
         run: |
-          # --- Always-on: cross-language foundational packs ---
-          RULES=""
-          RULES="$RULES p/security-audit"       # general security patterns
-          RULES="$RULES p/secrets"              # hardcoded credentials
-          RULES="$RULES p/owasp-top-ten"        # OWASP Top 10
-          RULES="$RULES p/trailofbits"          # Trail of Bits: crypto, concurrency, CORS
+          # Always-on: foundational cross-language packs
+          RULES="p/security-audit p/secrets p/owasp-top-ten p/trailofbits"
 
-          # --- Always-on: all language packs ---
-          # Semgrep skips rules that don't apply to a file's language,
-          # so running all packs has no false-positive cost.
-          RULES="$RULES p/python"               # Flask/Django taint, pickle, yaml.load
-          RULES="$RULES p/golang"               # Go security patterns
-          RULES="$RULES p/gosec"                # gosec ruleset for Go
-          RULES="$RULES p/java"                 # Java/Spring taint, XXE, SSRF
-          RULES="$RULES p/javascript"           # JS/Node XSS, injection, path traversal
-          RULES="$RULES p/typescript"           # TypeScript-specific patterns
-          RULES="$RULES p/rust"                 # Rust unsafe, crypto
-          RULES="$RULES p/php"                  # PHP injection, eval, unserialize, LFI
-          RULES="$RULES p/ruby"                 # Ruby/Rails injection, mass assignment
-          RULES="$RULES p/scala"                # Scala injection patterns
-          RULES="$RULES p/kotlin"               # Kotlin security patterns
+          # Always-on: all language packs
+          # Semgrep skips rules that don't match the file language — no FP cost
+          RULES="$RULES p/python p/golang p/gosec p/java"
+          RULES="$RULES p/javascript p/typescript p/rust p/php"
+          RULES="$RULES p/ruby p/scala p/kotlin"
 
-          # --- Infrastructure packs (detected) ---
-          if find . -name "*.tf" -maxdepth 4 | grep -q .; then
-            RULES="$RULES p/terraform"
-          fi
-          if find . \( -name "*.yaml" -o -name "*.yml" \) -maxdepth 4 \
-               | xargs grep -l "^kind:" 2>/dev/null | grep -q .; then
-            RULES="$RULES p/kubernetes"
-          fi
-          if find . -name "Dockerfile" -maxdepth 4 | grep -q .; then
-            RULES="$RULES p/dockerfile"
-          fi
+          # Infrastructure (detected)
+          find . -name "*.tf"         -maxdepth 4 | grep -q . && RULES="$RULES p/terraform"
+          find . -name "Dockerfile"   -maxdepth 4 | grep -q . && RULES="$RULES p/dockerfile"
+          find . \( -name "*.yaml" -o -name "*.yml" \) -maxdepth 4 \
+            | xargs grep -l "^kind:" 2>/dev/null | grep -q .  && RULES="$RULES p/kubernetes"
 
-          # Deduplicate rule names, then build --config flags
+          # Deduplicate and build flags
           RULES=$(echo "$RULES" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
           FLAGS=""
           for r in $RULES; do FLAGS="$FLAGS --config $r"; done
-
           echo "Rules: $RULES"
           echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
 
@@ -69,19 +51,17 @@ jobs:
         shell: bash
         run: |
           semgrep ${{ steps.rules.outputs.flags }} \
-            --json \
-            --quiet \
-            2>/dev/null > /tmp/semgrep-results.json || true
-          COUNT=$(jq '.results | length' /tmp/semgrep-results.json)
-          echo "Found $COUNT issues"
+            --json --quiet 2>/dev/null > /tmp/semgrep-results.json || true
+          echo "Semgrep findings: $(jq '.results | length' /tmp/semgrep-results.json)"
 
-      - name: Post inline PR comments via reviewdog
+      - name: Post Semgrep inline comments
         if: github.event_name == 'pull_request'
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          jq -r '.results[] | "\(.path):\(.start.line):\(.start.col): warning: [\(.check_id)] \(.extra.message)"' \
+          jq -r '.results[] |
+            "\(.path):\(.start.line):\(.start.col): warning: [\(.check_id)] \(.extra.message)"' \
             /tmp/semgrep-results.json \
           | reviewdog \
               -efm="%f:%l:%c: %t%*[^:]: %m" \
@@ -91,19 +71,113 @@ jobs:
               -level=warning \
               -fail-on-error=false
 
-      - name: Write job summary
+      - name: Semgrep job summary
         if: always()
         shell: bash
         run: |
-          echo "## Semgrep SAST Results" >> "$GITHUB_STEP_SUMMARY"
           COUNT=$(jq '.results | length' /tmp/semgrep-results.json 2>/dev/null || echo 0)
-          echo "**Total findings: $COUNT**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Semgrep SAST — $COUNT findings" >> "$GITHUB_STEP_SUMMARY"
           if [ "$COUNT" -gt "0" ]; then
             echo "| File | Line | Rule | Severity |" >> "$GITHUB_STEP_SUMMARY"
             echo "|------|------|------|----------|" >> "$GITHUB_STEP_SUMMARY"
-            jq -r '.results[] | "| \(.path) | \(.start.line) | \(.check_id) | \(.extra.severity) |"' \
+            jq -r '.results[] |
+              "| \(.path) | \(.start.line) | \(.check_id) | \(.extra.severity) |"' \
               /tmp/semgrep-results.json >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No findings. Clean scan." >> "$GITHUB_STEP_SUMMARY"
+            echo "No findings." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── Job 2: TruffleHog Secret Scanning ───────────────────────────────────────
+  trufflehog:
+    name: TruffleHog Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so TruffleHog can scan all commits in the PR
+
+      - name: Install TruffleHog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Run TruffleHog (verified secrets only)
+        id: trufflehog
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Scan only commits introduced by this PR
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+            echo "Scanning commits $BASE..$HEAD"
+            trufflehog git file://. \
+              --since-commit "$BASE" \
+              --branch "${{ github.head_ref }}" \
+              --only-verified \
+              --json \
+              --no-update \
+              2>/dev/null > /tmp/trufflehog-results.json || true
+          else
+            # On push to main — scan last commit only
+            trufflehog git file://. \
+              --since-commit HEAD~1 \
+              --only-verified \
+              --json \
+              --no-update \
+              2>/dev/null > /tmp/trufflehog-results.json || true
+          fi
+
+          COUNT=$(grep -c '"DetectorName"' /tmp/trufflehog-results.json 2>/dev/null || echo 0)
+          echo "TruffleHog verified secrets found: $COUNT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Post TruffleHog inline PR comments
+        if: github.event_name == 'pull_request'
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # TruffleHog outputs one JSON object per line (NDJSON)
+          # Convert to reviewdog errfmt and post as inline comments
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            file=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.file // ""')
+            lineno=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.line // 1')
+            detector=$(echo "$line" | jq -r '.DetectorName // "Secret"')
+            verified=$(echo "$line" | jq -r '.Verified // false')
+            raw=$(echo "$line" | jq -r '.Raw // ""' | cut -c1-20)
+            [ -z "$file" ] && continue
+            echo "${file}:${lineno}:1: error: [TruffleHog:${detector}] Verified live secret detected (${detector}). Rotate immediately. Starts with: ${raw}..."
+          done < /tmp/trufflehog-results.json \
+          | reviewdog \
+              -efm="%f:%l:%c: %t%*[^:]: %m" \
+              -name="Secret Scan" \
+              -reporter=github-pr-review \
+              -filter-mode=file \
+              -level=error \
+              -fail-on-error=false
+
+      - name: TruffleHog job summary
+        if: always()
+        shell: bash
+        run: |
+          COUNT=$(grep -c '"DetectorName"' /tmp/trufflehog-results.json 2>/dev/null || echo 0)
+          echo "## TruffleHog Secret Scan — $COUNT verified secrets" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "| File | Line | Secret Type | Starts With |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|------|------|-------------|-------------|" >> "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              file=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.file // "unknown"')
+              lineno=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.line // "-"')
+              detector=$(echo "$line" | jq -r '.DetectorName // "Secret"')
+              raw=$(echo "$line" | jq -r '.Raw // ""' | cut -c1-12)
+              echo "| \`$file\` | $lineno | $detector | \`${raw}...\` |"
+            done < /tmp/trufflehog-results.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No verified secrets found." >> "$GITHUB_STEP_SUMMARY"
           fi
