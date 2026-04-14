@@ -1,0 +1,76 @@
+name: Semgrep SAST (Reusable)
+
+on:
+  workflow_call:
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install semgrep and reviewdog
+        run: |
+          pip install semgrep --quiet
+          curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Detect language and build rule flags
+        id: rules
+        shell: bash
+        run: |
+          RULES="p/security-audit p/secrets p/owasp-top-ten"
+          if [ -f go.mod ]; then RULES="$RULES p/golang p/gosec"; fi
+          if [ -f pom.xml ] || [ -f build.gradle ]; then RULES="$RULES p/java"; fi
+          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then RULES="$RULES p/python"; fi
+          if [ -f package.json ]; then RULES="$RULES p/javascript p/typescript"; fi
+          if [ -f Cargo.toml ]; then RULES="$RULES p/rust"; fi
+
+          FLAGS=""
+          for r in $RULES; do FLAGS="$FLAGS --config $r"; done
+          echo "Detected rules: $FLAGS"
+          echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Run Semgrep
+        shell: bash
+        run: |
+          semgrep ${{ steps.rules.outputs.flags }} --json --quiet 2>/dev/null > /tmp/semgrep-results.json || true
+          COUNT=$(jq '.results | length' /tmp/semgrep-results.json)
+          echo "Found $COUNT issues"
+
+      - name: Post inline PR comments via reviewdog
+        if: github.event_name == 'pull_request'
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          jq -r '.results[] | "\(.path):\(.start.line):\(.start.col): warning: [\(.check_id)] \(.extra.message)"' \
+            /tmp/semgrep-results.json \
+          | reviewdog \
+              -efm="%f:%l:%c: %t%*[^:]: %m" \
+              -name="semgrep" \
+              -reporter=github-pr-review \
+              -filter-mode=added \
+              -level=warning \
+              -fail-on-error=false
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Semgrep SAST Results" >> "$GITHUB_STEP_SUMMARY"
+          COUNT=$(jq '.results | length' /tmp/semgrep-results.json 2>/dev/null || echo 0)
+          echo "**Total findings: $COUNT**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COUNT" -gt "0" ]; then
+            echo "| File | Line | Rule | Severity |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|------|------|------|----------|" >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.results[] | "| \(.path) | \(.start.line) | \(.check_id) | \(.extra.severity) |"' \
+              /tmp/semgrep-results.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No findings. Clean scan." >> "$GITHUB_STEP_SUMMARY"
+          fi
