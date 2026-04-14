@@ -23,15 +23,45 @@ jobs:
         id: rules
         shell: bash
         run: |
+          # --- Semgrep official packs (always applied) ---
           RULES="p/security-audit p/secrets p/owasp-top-ten"
-          if [ -f go.mod ]; then RULES="$RULES p/golang p/gosec"; fi
-          if [ -f pom.xml ] || [ -f build.gradle ]; then RULES="$RULES p/java"; fi
-          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then RULES="$RULES p/python"; fi
-          if [ -f package.json ]; then RULES="$RULES p/javascript p/typescript"; fi
-          if [ -f Cargo.toml ]; then RULES="$RULES p/rust"; fi
+
+          # --- Renowned third-party rule collections ---
+          # Trail of Bits — crypto, concurrency, CORS/CSRF, container security
+          RULES="$RULES p/trailofbits"
+
+          # --- Language-specific packs (auto-detected) ---
+          if [ -f go.mod ]; then
+            RULES="$RULES p/golang p/gosec"
+          fi
+          if [ -f pom.xml ] || [ -f build.gradle ]; then
+            RULES="$RULES p/java"
+          fi
+          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+            RULES="$RULES p/python"
+          fi
+          if [ -f package.json ]; then
+            RULES="$RULES p/javascript p/typescript"
+          fi
+          if [ -f Cargo.toml ]; then
+            RULES="$RULES p/rust"
+          fi
+          if [ -f "*.tf" ] || [ -d "terraform" ]; then
+            RULES="$RULES p/terraform"
+          fi
+          if ls *.tf 1>/dev/null 2>&1 || find . -name "*.tf" -maxdepth 3 | grep -q .; then
+            RULES="$RULES p/terraform"
+          fi
+          if find . -name "*.yaml" -o -name "*.yml" | xargs grep -l "kind:" 2>/dev/null | grep -q .; then
+            RULES="$RULES p/kubernetes"
+          fi
 
           FLAGS=""
           for r in $RULES; do FLAGS="$FLAGS --config $r"; done
+
+          # Deduplicate flags
+          FLAGS=$(echo "$FLAGS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
           echo "Detected rules: $FLAGS"
           echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
 
@@ -52,7 +82,7 @@ jobs:
             /tmp/semgrep-results.json \
           | reviewdog \
               -efm="%f:%l:%c: %t%*[^:]: %m" \
-              -name="semgrep" \
+              -name="Security Scan" \
               -reporter=github-pr-review \
               -filter-mode=added \
               -level=warning \
