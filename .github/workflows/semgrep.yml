@@ -121,15 +121,21 @@ jobs:
               --branch "${{ github.head_ref }}" \
               --json \
               --no-update \
-              2>/dev/null > /tmp/trufflehog-results.json || true
+              2>/tmp/trufflehog-stderr.log > /tmp/trufflehog-results.json || true
           else
             # On push to main — scan last commit only
             trufflehog git file://. \
               --since-commit HEAD~1 \
               --json \
               --no-update \
-              2>/dev/null > /tmp/trufflehog-results.json || true
+              2>/tmp/trufflehog-stderr.log > /tmp/trufflehog-results.json || true
           fi
+
+          echo "--- TruffleHog stderr ---"
+          cat /tmp/trufflehog-stderr.log 2>/dev/null || echo "(no stderr)"
+          echo "--- TruffleHog raw results ---"
+          cat /tmp/trufflehog-results.json 2>/dev/null || echo "(empty)"
+          echo "--- end ---"
 
           COUNT=0
           if [ -f /tmp/trufflehog-results.json ]; then
