@@ -136,13 +136,13 @@ jobs:
           # Convert to reviewdog errfmt and post as inline comments
           while IFS= read -r line; do
             [ -z "$line" ] && continue
-            file=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.file // ""')
-            lineno=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.line // 1')
+            # Support both git and filesystem source metadata
+            file=$(echo "$line" | jq -r '(.SourceMetadata.Data.Git.file // .SourceMetadata.Data.Filesystem.file) // ""')
+            lineno=$(echo "$line" | jq -r '(.SourceMetadata.Data.Git.line // .SourceMetadata.Data.Filesystem.line) // 1')
             detector=$(echo "$line" | jq -r '.DetectorName // "Secret"')
-            verified=$(echo "$line" | jq -r '.Verified // false')
             raw=$(echo "$line" | jq -r '.Raw // ""' | cut -c1-20)
             [ -z "$file" ] && continue
-            echo "${file}:${lineno}:1: error: [TruffleHog:${detector}] Verified live secret detected (${detector}). Rotate immediately. Starts with: ${raw}..."
+            echo "${file}:${lineno}:1: error: [TruffleHog:${detector}] Secret detected. Rotate immediately. Starts with: ${raw}..."
           done < /tmp/trufflehog-results.json \
           | reviewdog \
               -efm="%f:%l:%c: %t%*[^:]: %m" \
@@ -163,8 +163,8 @@ jobs:
             echo "|------|------|-------------|-------------|" >> "$GITHUB_STEP_SUMMARY"
             while IFS= read -r line; do
               [ -z "$line" ] && continue
-              file=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.file // "unknown"')
-              lineno=$(echo "$line" | jq -r '.SourceMetadata.Data.Git.line // "-"')
+              file=$(echo "$line" | jq -r '(.SourceMetadata.Data.Git.file // .SourceMetadata.Data.Filesystem.file) // "unknown"')
+              lineno=$(echo "$line" | jq -r '(.SourceMetadata.Data.Git.line // .SourceMetadata.Data.Filesystem.line) // "-"')
               detector=$(echo "$line" | jq -r '.DetectorName // "Secret"')
               raw=$(echo "$line" | jq -r '.Raw // ""' | cut -c1-12)
               echo "| \`$file\` | $lineno | $detector | \`${raw}...\` |"
